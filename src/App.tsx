@@ -1,8 +1,10 @@
+import { useCallback, useEffect } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import { ChatPanel } from '@/components/ChatPanel'
 import { Composer } from '@/components/Composer'
 import { SettingsPanel } from '@/components/SettingsPanel'
 import { useLanguageModel } from '@/hooks/useLanguageModel'
+import { useConversations } from '@/hooks/useConversations'
 
 function availabilityMessage(
   availability: ReturnType<typeof useLanguageModel>['availability'],
@@ -23,6 +25,44 @@ function availabilityMessage(
 
 function App() {
   const lm = useLanguageModel()
+  const convs = useConversations()
+
+  useEffect(() => {
+    if (lm.messages.length === 0 || lm.isStreaming) return
+    const id = convs.saveConversation(
+      convs.activeConversationId,
+      lm.messages,
+      lm.params,
+    )
+    convs.setActiveConversationId(id)
+  }, [lm.messages, lm.isStreaming])
+
+  const handleSelectConversation = useCallback(
+    (id: string) => {
+      const conv = convs.loadConversation(id)
+      if (!conv) return
+      lm.loadConversation(conv.messages, conv.params)
+      convs.setActiveConversationId(id)
+    },
+    [convs, lm],
+  )
+
+  const handleDeleteConversation = useCallback(
+    (id: string) => {
+      convs.deleteConversation(id)
+      if (convs.activeConversationId === id) {
+        lm.resetSession()
+        convs.setActiveConversationId(null)
+      }
+    },
+    [convs, lm],
+  )
+
+  const handleReset = useCallback(() => {
+    lm.resetSession()
+    convs.setActiveConversationId(null)
+  }, [lm, convs])
+
   const banner = availabilityMessage(lm.availability)
   const composerDisabled =
     lm.availability === 'unavailable' ||
@@ -38,7 +78,11 @@ function App() {
         hasMessages={lm.messages.length > 0}
         disabled={lm.availability === 'unavailable'}
         onChange={lm.setParams}
-        onReset={lm.resetSession}
+        onReset={handleReset}
+        conversations={convs.conversations}
+        activeConversationId={convs.activeConversationId}
+        onSelectConversation={handleSelectConversation}
+        onDeleteConversation={handleDeleteConversation}
       />
       <main className="flex min-w-0 flex-1 flex-col">
         {banner && (

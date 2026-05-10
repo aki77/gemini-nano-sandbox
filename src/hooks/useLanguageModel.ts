@@ -39,6 +39,7 @@ export interface UseLanguageModelActions {
   stop: () => void
   resetSession: () => void
   setParams: (next: Partial<SessionParams>) => void
+  loadConversation: (messages: ChatMessage[], params: SessionParams) => void
 }
 
 const DEFAULT_SYSTEM_PROMPT = ''
@@ -74,6 +75,7 @@ export function useLanguageModel(): UseLanguageModelState &
   const sessionRef = useRef<LanguageModel | null>(null)
   const sessionParamsRef = useRef<SessionParams | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const pendingInitialMessagesRef = useRef<ChatMessage[]>([])
 
   useEffect(() => {
     let cancelled = false
@@ -137,8 +139,12 @@ export function useLanguageModel(): UseLanguageModelState &
           systemPrompt: current.systemPrompt,
           temperature: current.temperature,
           topK: current.topK,
+          initialMessages: pendingInitialMessagesRef.current
+            .filter((m) => m.content)
+            .map((m) => ({ role: m.role, content: m.content })),
           onDownloadProgress: (loaded) => setDownloadProgress(loaded),
         })
+        pendingInitialMessagesRef.current = []
         sessionRef.current = session
         sessionParamsRef.current = { ...current }
         return session
@@ -233,6 +239,28 @@ export function useLanguageModel(): UseLanguageModelState &
     setIsDirty(false)
   }, [])
 
+  const loadConversation = useCallback(
+    (msgs: ChatMessage[], newParams: SessionParams) => {
+      abortRef.current?.abort()
+      abortRef.current = null
+      if (sessionRef.current) {
+        try {
+          sessionRef.current.destroy()
+        } catch {
+          // ignore
+        }
+        sessionRef.current = null
+      }
+      sessionParamsRef.current = null
+      pendingInitialMessagesRef.current = msgs
+      setMessages(msgs)
+      setParamsState(newParams)
+      setError(null)
+      setIsDirty(false)
+    },
+    [],
+  )
+
   const setParams = useCallback((next: Partial<SessionParams>) => {
     setParamsState((prev) => {
       const merged = { ...prev, ...next }
@@ -262,5 +290,6 @@ export function useLanguageModel(): UseLanguageModelState &
     stop,
     resetSession,
     setParams,
+    loadConversation,
   }
 }

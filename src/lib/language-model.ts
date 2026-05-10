@@ -8,6 +8,7 @@ export interface SessionOptions {
   systemPrompt?: string
   temperature?: number
   topK?: number
+  initialMessages?: Array<{ role: 'user' | 'assistant'; content: string }>
   onDownloadProgress?: (loaded: number) => void
   signal?: AbortSignal
 }
@@ -63,15 +64,24 @@ export async function createSession(
     throw new Error('LanguageModel API is not available in this browser.')
   }
 
-  const { systemPrompt, temperature, topK, onDownloadProgress, signal } =
+  const { systemPrompt, temperature, topK, initialMessages, onDownloadProgress, signal } =
     options
 
   const createOptions: LanguageModelCreateOptions = { signal }
 
+  const userAssistantMessages: LanguageModelMessage[] = []
+  if (initialMessages && initialMessages.length > 0) {
+    const capped = initialMessages.slice(-20)
+    for (const msg of capped) {
+      userAssistantMessages.push({ role: msg.role, content: msg.content })
+    }
+  }
+
   if (systemPrompt && systemPrompt.trim().length > 0) {
-    createOptions.initialPrompts = [
-      { role: 'system', content: systemPrompt },
-    ]
+    const sysMsg: LanguageModelSystemMessage = { role: 'system', content: systemPrompt }
+    createOptions.initialPrompts = [sysMsg, ...userAssistantMessages]
+  } else if (userAssistantMessages.length > 0) {
+    createOptions.initialPrompts = userAssistantMessages
   }
 
   if (typeof temperature === 'number') {
