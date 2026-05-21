@@ -4,11 +4,14 @@ export type AvailabilityStatus =
   | 'downloading'
   | 'available'
 
+export type InputModality = 'image' | 'audio'
+
 export interface SessionOptions {
   systemPrompt?: string
   temperature?: number
   topK?: number
   initialMessages?: Array<{ role: 'user' | 'assistant'; content: string }>
+  expectedInputs?: InputModality[]
   onDownloadProgress?: (loaded: number) => void
   signal?: AbortSignal
 }
@@ -17,12 +20,17 @@ export function isLanguageModelSupported(): boolean {
   return typeof globalThis !== 'undefined' && 'LanguageModel' in globalThis
 }
 
-export async function checkAvailability(): Promise<AvailabilityStatus> {
+export async function checkAvailability(
+  expectedInputs?: InputModality[],
+): Promise<AvailabilityStatus> {
   if (!isLanguageModelSupported()) {
     return 'unavailable'
   }
   try {
-    return await LanguageModel.availability()
+    const opts = expectedInputs?.length
+      ? { expectedInputs: expectedInputs.map((type) => ({ type })) }
+      : undefined
+    return await LanguageModel.availability(opts)
   } catch {
     return 'unavailable'
   }
@@ -64,10 +72,24 @@ export async function createSession(
     throw new Error('LanguageModel API is not available in this browser.')
   }
 
-  const { systemPrompt, temperature, topK, initialMessages, onDownloadProgress, signal } =
-    options
+  const {
+    systemPrompt,
+    temperature,
+    topK,
+    initialMessages,
+    expectedInputs,
+    onDownloadProgress,
+    signal,
+  } = options
 
   const createOptions: LanguageModelCreateOptions = { signal }
+
+  if (expectedInputs?.length) {
+    createOptions.expectedInputs = [
+      { type: 'text' },
+      ...expectedInputs.map((type) => ({ type }) as LanguageModelExpected),
+    ]
+  }
 
   const userAssistantMessages: LanguageModelMessage[] = []
   if (initialMessages && initialMessages.length > 0) {
@@ -109,10 +131,14 @@ export interface StreamCallbacks {
 
 export async function streamPrompt(
   session: LanguageModel,
-  input: string,
+  input: string | LanguageModelMessageContent[],
   { onDelta, signal }: StreamCallbacks,
 ): Promise<string> {
-  const stream = session.promptStreaming(input, { signal })
+  const prompt: LanguageModelPrompt =
+    typeof input === 'string'
+      ? input
+      : [{ role: 'user', content: input }]
+  const stream = session.promptStreaming(prompt, { signal })
   const reader = stream.getReader()
   let fullText = ''
   try {

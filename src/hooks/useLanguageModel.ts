@@ -1,19 +1,35 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   type AvailabilityStatus,
+  type InputModality,
   type ResolvedParams,
   checkAvailability,
   createSession,
   getParams,
   streamPrompt,
 } from '@/lib/language-model'
+import { createId } from '@/lib/utils'
 
 export type ChatRole = 'user' | 'assistant'
+export type AttachmentKind = 'image' | 'audio'
+
+export interface AttachmentBase {
+  id: string
+  kind: AttachmentKind
+  name: string
+  mimeType: string
+}
+
+export interface Attachment extends AttachmentBase {
+  blob: Blob
+  previewUrl: string
+}
 
 export interface ChatMessage {
   id: string
   role: ChatRole
   content: string
+  attachments?: AttachmentBase[]
 }
 
 export interface SessionParams {
@@ -35,7 +51,7 @@ export interface UseLanguageModelState {
 }
 
 export interface UseLanguageModelActions {
-  send: (text: string) => Promise<void>
+  send: (text: string, attachments?: Attachment[]) => Promise<void>
   stop: () => void
   resetSession: () => void
   setParams: (next: Partial<SessionParams>) => void
@@ -44,14 +60,24 @@ export interface UseLanguageModelActions {
 
 const DEFAULT_SYSTEM_PROMPT = ''
 
-function createId(): string {
-  if (
-    typeof globalThis.crypto !== 'undefined' &&
-    'randomUUID' in globalThis.crypto
-  ) {
-    return globalThis.crypto.randomUUID()
+function revokeAttachments(messages: ChatMessage[]): void {
+  for (const msg of messages) {
+    if (msg.attachments) {
+      for (const a of msg.attachments) {
+        if ('previewUrl' in a) URL.revokeObjectURL((a as Attachment).previewUrl)
+      }
+    }
   }
-  return Math.random().toString(36).slice(2)
+}
+
+function detectModalities(messages: ChatMessage[]): InputModality[] {
+  const set = new Set<InputModality>()
+  for (const msg of messages) {
+    if (msg.attachments) {
+      for (const a of msg.attachments) set.add(a.kind)
+    }
+  }
+  return Array.from(set)
 }
 
 export function useLanguageModel(): UseLanguageModelState &
@@ -74,6 +100,7 @@ export function useLanguageModel(): UseLanguageModelState &
 
   const sessionRef = useRef<LanguageModel | null>(null)
   const sessionParamsRef = useRef<SessionParams | null>(null)
+  const sessionModalitiesRef = useRef<InputModality[]>([])
   const abortRef = useRef<AbortController | null>(null)
   const pendingInitialMessagesRef = useRef<ChatMessage[]>([])
 
@@ -108,20 +135,33 @@ export function useLanguageModel(): UseLanguageModelState &
       abortRef.current?.abort()
       sessionRef.current?.destroy()
       sessionRef.current = null
+      revokeAttachments(pendingInitialMessagesRef.current)
     }
   }, [])
 
   const ensureSession = useCallback(
-    async (current: SessionParams): Promise<LanguageModel> => {
+    async (
+      current: SessionParams,
+      neededModalities: InputModality[],
+    ): Promise<LanguageModel> => {
       const existing = sessionRef.current
       const lastParams = sessionParamsRef.current
+      const lastModalities = sessionModalitiesRef.current
+
       const sameParams =
         lastParams !== null &&
         lastParams.temperature === current.temperature &&
         lastParams.topK === current.topK &&
         lastParams.systemPrompt === current.systemPrompt
 
-      if (existing && sameParams) return existing
+      const sameModalities =
+        lastModalities.length === neededModalities.length &&
+        neededModalities.every((m) => lastModalities.includes(m))
+
+      if (existing && sameParams && sameModalities) {
+        pendingInitialMessagesRef.current = []
+        return existing
+      }
 
       if (existing) {
         try {
@@ -139,14 +179,16 @@ export function useLanguageModel(): UseLanguageModelState &
           systemPrompt: current.systemPrompt,
           temperature: current.temperature,
           topK: current.topK,
+          expectedInputs: neededModalities.length ? neededModalities : undefined,
           initialMessages: pendingInitialMessagesRef.current
-            .filter((m) => m.content)
+            .filter((m) => m.content && !m.attachments?.length)
             .map((m) => ({ role: m.role, content: m.content })),
           onDownloadProgress: (loaded) => setDownloadProgress(loaded),
         })
         pendingInitialMessagesRef.current = []
         sessionRef.current = session
         sessionParamsRef.current = { ...current }
+        sessionModalitiesRef.current = [...neededModalities]
         return session
       } finally {
         setIsPreparingSession(false)
@@ -157,9 +199,10 @@ export function useLanguageModel(): UseLanguageModelState &
   )
 
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, attachments?: Attachment[]) => {
       const trimmed = text.trim()
-      if (!trimmed) return
+      const hasAttachments = (attachments?.length ?? 0) > 0
+      if (!trimmed && !hasAttachments) return
       if (isStreaming || isPreparingSession) return
 
       setError(null)
@@ -167,6 +210,7 @@ export function useLanguageModel(): UseLanguageModelState &
         id: createId(),
         role: 'user',
         content: trimmed,
+        attachments: attachments?.length ? attachments : undefined,
       }
       const assistantMessage: ChatMessage = {
         id: createId(),
@@ -179,10 +223,28 @@ export function useLanguageModel(): UseLanguageModelState &
       abortRef.current = controller
 
       try {
-        const session = await ensureSession(params)
+        const neededModalities = detectModalities([
+          ...pendingInitialMessagesRef.current,
+          userMessage,
+        ])
+        const session = await ensureSession(params, neededModalities)
         setIsDirty(false)
         setIsStreaming(true)
-        await streamPrompt(session, trimmed, {
+
+        let promptInput: string | LanguageModelMessageContent[]
+        if (attachments && attachments.length > 0) {
+          promptInput = [
+            ...attachments.map((a) => ({
+              type: a.kind as LanguageModelMessageType,
+              value: a.blob,
+            })),
+            { type: 'text' as LanguageModelMessageType, value: trimmed || ' ' },
+          ]
+        } else {
+          promptInput = trimmed
+        }
+
+        await streamPrompt(session, promptInput, {
           signal: controller.signal,
           onDelta: (_delta, full) => {
             setMessages((prev) => {
@@ -234,7 +296,11 @@ export function useLanguageModel(): UseLanguageModelState &
       sessionRef.current = null
     }
     sessionParamsRef.current = null
-    setMessages([])
+    sessionModalitiesRef.current = []
+    setMessages((prev) => {
+      revokeAttachments(prev)
+      return []
+    })
     setError(null)
     setIsDirty(false)
   }, [])
@@ -252,8 +318,12 @@ export function useLanguageModel(): UseLanguageModelState &
         sessionRef.current = null
       }
       sessionParamsRef.current = null
+      sessionModalitiesRef.current = []
+      setMessages((prev) => {
+        revokeAttachments(prev)
+        return msgs
+      })
       pendingInitialMessagesRef.current = msgs
-      setMessages(msgs)
       setParamsState(newParams)
       setError(null)
       setIsDirty(false)

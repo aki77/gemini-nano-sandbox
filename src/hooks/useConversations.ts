@@ -1,5 +1,8 @@
 import { useCallback, useState } from 'react'
-import type { ChatMessage, SessionParams } from '@/hooks/useLanguageModel'
+import type { AttachmentBase, ChatMessage, SessionParams } from '@/hooks/useLanguageModel'
+import { createId } from '@/lib/utils'
+
+export type PersistedAttachment = AttachmentBase
 
 export interface Conversation {
   id: string
@@ -13,14 +16,21 @@ export interface Conversation {
 const STORAGE_KEY = 'gemini-nano-conversations'
 const MAX_CONVERSATIONS = 10
 
-function createId(): string {
-  if (
-    typeof globalThis.crypto !== 'undefined' &&
-    'randomUUID' in globalThis.crypto
-  ) {
-    return globalThis.crypto.randomUUID()
-  }
-  return Math.random().toString(36).slice(2)
+type PersistedMessage = Omit<ChatMessage, 'attachments'> & { attachments?: PersistedAttachment[] }
+
+function stripAttachmentBlobs(messages: ChatMessage[]): PersistedMessage[] {
+  return messages.map((msg) => {
+    if (!msg.attachments?.length) return msg
+    return {
+      ...msg,
+      attachments: msg.attachments.map(({ id, kind, name, mimeType }) => ({
+        id,
+        kind,
+        name,
+        mimeType,
+      })),
+    }
+  })
 }
 
 function loadFromStorage(): Conversation[] {
@@ -35,7 +45,11 @@ function loadFromStorage(): Conversation[] {
 
 function saveToStorage(conversations: Conversation[]): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations))
+    const serializable = conversations.map((c) => ({
+      ...c,
+      messages: stripAttachmentBlobs(c.messages),
+    }))
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(serializable))
   } catch (e) {
     console.warn('localStorage write failed:', e)
   }
@@ -43,7 +57,13 @@ function saveToStorage(conversations: Conversation[]): void {
 
 function generateTitle(messages: ChatMessage[]): string {
   const first = messages.find((m) => m.role === 'user')
-  return first?.content.slice(0, 20) ?? '新しい会話'
+  if (!first) return '新しい会話'
+  if (first.content) return first.content.slice(0, 20)
+  if (first.attachments?.[0]) {
+    const kind = first.attachments[0].kind === 'image' ? '画像' : '音声'
+    return `${kind}メッセージ`
+  }
+  return '新しい会話'
 }
 
 export function useConversations() {
@@ -61,7 +81,7 @@ export function useConversations() {
       params: SessionParams,
     ): string => {
       const now = Date.now()
-      let resultId = id ?? createId()
+      const resultId = id ?? createId()
 
       setConversations((prev) => {
         const existing = id ? prev.find((c) => c.id === id) : null
