@@ -35,6 +35,7 @@ src/
 - **型制約**: `@types/dom-chromium-ai` の `initialPrompts` 型は厳密。`LanguageModelSystemMessage` と `LanguageModelMessage[]` を別々に組み立てて結合する必要がある（`LanguageModelPrompt[]` は使えない）
 - **`@` エイリアス**: `@/` は `src/` を指す（vite.config.ts で設定済み）
 - **会話履歴**: localStorageキー `gemini-nano-conversations`、最大10件、updatedAt降順
+- **GitHub Pages デプロイ**: `vite.config.ts` の `base` はリポジトリ名 `/gemini-nano-sandbox/` を本番ビルド時のみ適用。リポジトリをリネームしたら同時更新が必要
 
 ## Code Style
 

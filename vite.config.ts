@@ -6,11 +6,12 @@ import tailwindcss from '@tailwindcss/vite'
 
 const dirname = path.dirname(fileURLToPath(import.meta.url))
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  base: command === 'build' ? '/gemini-nano-sandbox/' : '/',
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
       '@': path.resolve(dirname, './src'),
     },
   },
-})
+}))
